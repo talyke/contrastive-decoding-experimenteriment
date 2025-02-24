@@ -44,35 +44,22 @@ formatted_prompt = large_model_tokenizer.apply_chat_template(
     tokenize=False
 )
 
-def contrastive_text_generation(small_model, large_model, prompt, max_tokens) -> str:
-    """
-    Generates text using contrastive decoding with two models (small and large).
-    
-    Parameters:
-        small_model (AutoModelForCausalLM): Smaller model used for contrastive decoding.
-        large_model (AutoModelForCausalLM): Larger model used for contrastive decoding.
-        prompt (str): The prompt for text generation.
-        max_tokens (int): Maximum number of tokens to generate.
-    
-    Returns:
-        str: The selected generated text based on contrastive scoring.
-    """
-    
+def contrastive_text_generation(small_model, large_model, prompt, max_new_tokens) -> str:
     # Tokenize the prompt for both models
-    small_model_input_ids = small_model_tokenizer.encode(prompt, return_tensors='pt')
-    large_model_input_ids = large_model_tokenizer.encode(prompt, return_tensors='pt')
+    small_model_inputs = small_model_tokenizer(prompt, return_tensors='pt', padding=True)
+    large_model_inputs = large_model_tokenizer(prompt, return_tensors='pt', padding=True)
 
     # Generate responses from both models
-    small_model_response = small_model.generate(small_model_input_ids, max_length=max_tokens, num_return_sequences=1)
-    large_model_response = large_model.generate(large_model_input_ids, max_length=max_tokens, num_return_sequences=1)
+    small_model_response = small_model.generate(**small_model_inputs, max_new_tokens=max_new_tokens)
+    large_model_response = large_model.generate(**large_model_inputs, max_new_tokens=max_new_tokens)
 
     # Decode the generated responses
     small_model_output = small_model_tokenizer.decode(small_model_response[0], skip_special_tokens=True)
     large_model_output = large_model_tokenizer.decode(large_model_response[0], skip_special_tokens=True)
 
     # Calculate likelihoods of the generated responses
-    small_model_log_probs = small_model(small_model_input_ids, labels=small_model_response)[0]
-    large_model_log_probs = large_model(large_model_input_ids, labels=large_model_response)[0]
+    small_model_log_probs = small_model(**small_model_inputs, labels=small_model_response).logits
+    large_model_log_probs = large_model(**large_model_inputs, labels=large_model_response).logits
 
     # Compute contrastive score: difference between large and small model likelihoods
     contrastive_score = large_model_log_probs - small_model_log_probs
@@ -80,30 +67,30 @@ def contrastive_text_generation(small_model, large_model, prompt, max_tokens) ->
     # Select the response with the highest contrastive score
     return large_model_output if contrastive_score.item() > 0 else small_model_output
 
-# Load the models
-small_model = tr.AutoModelForCausalLM.from_pretrained(small_model_path)
-large_model = tr.AutoModelForCausalLM.from_pretrained(large_model_path)
+if __name__ == "__main__":
+    # Load the models
+    small_model = tr.AutoModelForCausalLM.from_pretrained(small_model_path)
+    large_model = tr.AutoModelForCausalLM.from_pretrained(large_model_path)
 
-# Move models to GPU if available
-if torch.cuda.is_available():
-    small_model = small_model.to('cuda')
-    large_model = large_model.to('cuda')
+    # Set the device for the models
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    small_model.to(device)
+    large_model.to(device)
 
-# Set models to evaluation mode
-small_model.eval()
-large_model.eval()
+    # Generate the response using contrastive decoding
+    response = contrastive_text_generation(
+        small_model=small_model,
+        large_model=large_model,
+        prompt=formatted_prompt,
+        max_new_tokens=50
+    )
 
-# Generate text using contrastive decoding
-generated_text = contrastive_text_generation(small_model, large_model, formatted_prompt, max_tokens=50)
+    # Print the generated response
+    print("Response:", response)
 
-# Print the generated text
-print(generated_text)
-
-# Clean up
-del small_model
-del large_model
-del small_model_tokenizer
-del large_model_tokenizer
-
-torch.cuda.empty_cache()
-# Note: The above code assumes that the models are already downloaded and available in the specified paths.
+    # Clean up the models
+    small_model.cpu()
+    large_model.cpu()
+    del small_model
+    del large_model
+    torch.cuda.empty_cache()
